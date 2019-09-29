@@ -38,7 +38,29 @@ int main() {
    * TODO: Initialize the pid variable.
    */
 
-  h.onMessage([&pid](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, 
+  // twiddle pid
+  // xx, yy, zz
+  pid.Init(0.2, 0.001, 3.0);
+  pid.InitDP({0.01, 0.001, 0.1});
+  // set twiddle = false to turn off twiddle for parameters optimization
+  bool twiddle = true;
+  double tolerence = 0.02;
+  long counter = 0;
+  long tmp_counter = -1;
+  int n = 100;
+  double error = 0.0;
+  double best_error  = std::numeric_limits<double>::max();
+  // index 0 for p, 
+  // index 1 for i.
+  // index 2 for d.
+  int index =0;
+  // step 0 for p[i] += dp[i], i.e. +
+  // step 1 for p[i] -= 2 * dp[i], i.e. -
+  // step 2 for p[i] += dp[i] (), i.e. no change
+  int step = -1;
+
+  h.onMessage([&pid, &twiddle, &counter, &tmp_counter, &n, 
+  &best_error, &error, &tolerence, &index, &step](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, 
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -54,19 +76,73 @@ int main() {
         if (event == "telemetry") {
           // j[1] is the data JSON object
           double cte = std::stod(j[1]["cte"].get<string>());
-          double speed = std::stod(j[1]["speed"].get<string>());
-          double angle = std::stod(j[1]["steering_angle"].get<string>());
-          double steer_value;
+          //double speed = std::stod(j[1]["speed"].get<string>());
+          //double angle = std::stod(j[1]["steering_angle"].get<string>());
           /**
            * TODO: Calculate steering value here, remember the steering value is
            *   [-1, 1].
            * NOTE: Feel free to play around with the throttle and speed.
            *   Maybe use another PID controller to control the speed!
            */
+          counter++;
+          std::cout << std::to_string(counter) << std::endl;
+          double steer_value = 0.0;
+
+          if(twiddle){
+            error += cte * cte;
+           
+            if(step == -1 && counter == n){
+              // get the error for the first n data
+              best_error = error;
+              // prepare for 'p' controller
+              index = 0;
+              // prepare for p[i] += dp[i]
+              step = 0;
+              pid.UpdateParameter(index, 1.0);
+
+            }else if(pid.DPSum() > tolerence){
+              if(step == 0 && counter == n){
+                if(error < best_error){
+                  best_error = error;
+                  pid.UpdateDP(index, 1.1);
+                  // prepare for next controller
+                  step = 0;
+                  index = (index+1)%3;
+                }else{
+                  pid.UpdateParameter(index, -2.0);
+                  // prepare for p[i] -= 2 * dp[i]
+                  step = 1;
+                }
+              }else if(step == 1 && counter == n){
+                if(error < best_error){
+                  best_error = error;
+                  pid.UpdateDP(index, 1.1);
+                  // prepare for next controller
+                  step = 0;
+                  index = (index+1)%3;
+                }else{
+                  pid.UpdateParameter(index, 1.0);
+                  pid.UpdateDP(index, 0.9);
+                }          
+              }
+            }
+            if(counter == n){
+              error = 0.0;
+              counter = 0;
+              pid.PrintPID();
+            }
+          }
+
+          pid.UpdateError(cte);
+          steer_value = 0.0 - pid.TotalError();
+
+          // Clip steer_value to [-1,1]
+          // We can use std::clamp if c++ 17 is supported
+          if (steer_value > 1) steer_value = 1;
+          if(steer_value < -1) steer_value = -1;
           
           // DEBUG
-          std::cout << "CTE: " << cte << " Steering Value: " << steer_value 
-                    << std::endl;
+          std::cout << "CTE: " << cte << " Steering Value: " << steer_value << std::endl;
 
           json msgJson;
           msgJson["steering_angle"] = steer_value;
